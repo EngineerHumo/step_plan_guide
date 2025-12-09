@@ -109,6 +109,7 @@ class PRPDataset(torch.utils.data.Dataset):
         tensors = tensor_transform(image=image, mask=mask, heatmap=heatmap)
         image_tensor = tensors["image"]
         mask_tensor = tensors["mask"].unsqueeze(0).float()
-        heatmap_tensor = tensors["heatmap"].unsqueeze(0)
+        #heatmap_tensor = tensors["heatmap"].unsqueeze(0)
+        heatmap_tensor = torch.from_numpy(tensors["heatmap"]).float().unsqueeze(0)
 
         return image_tensor, heatmap_tensor, mask_tensor

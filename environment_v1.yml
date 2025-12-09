@@ -1,0 +1,40 @@
+name: laser_gpu
+channels:
+  - pytorch        # PyTorch 官方频道 (优先)
+  - nvidia         # NVIDIA 官方频道 (CUDA 依赖)
+  - conda-forge    # 社区频道 (其他包)
+  - nodefaults     # 严防死守：禁止连接 Anaconda 商业频道
+dependencies:
+  # --- 核心环境 ---
+  - python=3.9
+
+  # --- 深度学习 (GPU版) ---
+  - pytorch
+  - torchvision
+  - torchaudio
+  - pytorch-cuda=12.1  # 关键！指定 CUDA 版本 (建议 11.8 或 12.1)
+  
+  # 注意：这里去掉了 'cpuonly'
+  # 'pytorch-cuda' 会告诉 conda 拉取带 GPU 支持的版本
+
+  # --- 图像处理与多媒体 ---
+  - numpy
+  - pillow
+  - ffmpeg
+  - tesseract
+  - openjpeg
+  - freetype
+
+  # --- 算法与数学工具 ---
+  - networkx
+  - sympy
+  - mkl
+
+  # --- 网络与实用工具 ---
+  - requests
+  - pip
+  - conda-pack
+  - filelock
+  - jinja2
+  - markupsafe
+  - typing_extensions
