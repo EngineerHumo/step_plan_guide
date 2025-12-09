@@ -115,10 +115,9 @@ class PRPDataset(torch.utils.data.Dataset):
         image = self._load_image(case_dir)
         mask = self._load_random_mask(case_dir)
 
-        if self.augment:
-            augmented = self.transform(image=image, mask=mask)
-            image = augmented["image"]
-            mask = augmented["mask"]
+        augmented = self.transform(image=image, mask=mask)
+        image = augmented["image"]
+        mask = augmented["mask"]
 
         h, w = mask.shape
         click_y, click_x = self._sample_click(mask)
