@@ -1,5 +1,4 @@
 import os
-import random
 from glob import glob
 from typing import List, Optional, Tuple
 
@@ -16,9 +15,9 @@ class PRPDataset(torch.utils.data.Dataset):
     Dataset for Interactive Retinal Laser Photocoagulation area segmentation.
 
     Each case directory can contain multiple target sub-region masks (gt_*.png).
-    A random target mask is selected every epoch, and a dynamic click heatmap is
-    generated from an eroded version of that mask to avoid overfitting to fixed
-    coordinates.
+    Every target mask is treated as an individual sample while sharing the case
+    image, and a dynamic click heatmap is generated from an eroded version of
+    that mask to avoid overfitting to fixed coordinates.
     """
 
     def __init__(
@@ -38,10 +37,18 @@ class PRPDataset(torch.utils.data.Dataset):
         if not self.cases:
             raise ValueError(f"No case folders found in {root_dir}")
 
+        self.samples: List[Tuple[str, str]] = []
+        for case_dir in self.cases:
+            mask_paths = sorted(glob(os.path.join(case_dir, "gt_*.png")))
+            if not mask_paths:
+                raise ValueError(f"No gt_*.png masks found in {case_dir}")
+            for mask_path in mask_paths:
+                self.samples.append((case_dir, mask_path))
+
         self.transform = self._build_transform()
 
     def __len__(self) -> int:  # pragma: no cover - trivial
-        return len(self.cases)
+        return len(self.samples)
 
     def _build_transform(self) -> A.Compose:
         transforms: list[BasicTransform] = []
@@ -90,11 +97,7 @@ class PRPDataset(torch.utils.data.Dataset):
             f"No image found in {case_dir}. Expected image.png or image with extensions {self.image_extensions}"
         )
 
-    def _load_random_mask(self, case_dir: str) -> np.ndarray:
-        mask_paths = sorted(glob(os.path.join(case_dir, "gt_*.png")))
-        if not mask_paths:
-            raise FileNotFoundError(f"No gt_*.png masks found in {case_dir}")
-        mask_path = random.choice(mask_paths)
+    def _load_mask(self, mask_path: str) -> np.ndarray:
         mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
         if mask is None:
             raise FileNotFoundError(f"Could not read mask: {mask_path}")
@@ -131,9 +134,9 @@ class PRPDataset(torch.utils.data.Dataset):
         return int(ys[idx]), int(xs[idx])
 
     def __getitem__(self, idx: int):
-        case_dir = self.cases[idx]
+        case_dir, mask_path = self.samples[idx]
         image = self._load_image(case_dir)
-        mask = self._load_random_mask(case_dir)
+        mask = self._load_mask(mask_path)
 
         augmented = self.transform(image=image, mask=mask)
         image = augmented["image"]
