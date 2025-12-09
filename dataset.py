@@ -72,11 +72,23 @@ class PRPDataset(torch.utils.data.Dataset):
         return A.Compose(transforms, additional_targets={"mask": "mask"})
 
     def _load_image(self, case_dir: str) -> np.ndarray:
+        image_path = os.path.join(case_dir, "image.png")
+        if os.path.exists(image_path):
+            image = cv2.imread(image_path)
+            if image is not None:
+                return image
+
+        # Fallback: try other known extensions but strictly prefer files named "image.*"
         for ext in self.image_extensions:
-            candidates = [p for p in glob(os.path.join(case_dir, f"*{ext}")) if "gt_" not in os.path.basename(p)]
-            if candidates:
-                return cv2.imread(candidates[0])
-        raise FileNotFoundError(f"No image found in {case_dir} with extensions {self.image_extensions}")
+            candidate = os.path.join(case_dir, f"image{ext}")
+            if os.path.exists(candidate):
+                image = cv2.imread(candidate)
+                if image is not None:
+                    return image
+
+        raise FileNotFoundError(
+            f"No image found in {case_dir}. Expected image.png or image with extensions {self.image_extensions}"
+        )
 
     def _load_random_mask(self, case_dir: str) -> np.ndarray:
         mask_paths = sorted(glob(os.path.join(case_dir, "gt_*.png")))
@@ -107,7 +119,15 @@ class PRPDataset(torch.utils.data.Dataset):
         if len(ys) == 0:
             h, w = mask.shape
             return h // 2, w // 2
-        idx = random.randint(0, len(ys) - 1)
+
+        # Increase the selection probability for pixels closer to the mask centroid
+        centroid_y = float(ys.mean())
+        centroid_x = float(xs.mean())
+        distances = np.sqrt((ys - centroid_y) ** 2 + (xs - centroid_x) ** 2)
+        # Avoid division by zero; closer pixels get higher weights
+        weights = 1.0 / (distances + 1e-3)
+        probs = weights / weights.sum()
+        idx = np.random.choice(len(ys), p=probs)
         return int(ys[idx]), int(xs[idx])
 
     def __getitem__(self, idx: int):
