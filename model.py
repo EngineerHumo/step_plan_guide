@@ -57,6 +57,45 @@ class CrossAttentionFusion(nn.Module):
         return image_feat + self.gamma * attn_out
 
 
+class ViTFeatureRefiner(nn.Module):
+    """Lightweight ViT-style encoder to model long-range dependencies."""
+
+    def __init__(self, channels: int, num_layers: int = 2, num_heads: int = 8, mlp_ratio: float = 4.0):
+        super().__init__()
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=channels,
+            nhead=num_heads,
+            dim_feedforward=int(channels * mlp_ratio),
+            batch_first=True,
+        )
+        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+
+    @staticmethod
+    def _build_2d_sincos_position_embedding(height: int, width: int, channels: int, device, dtype):
+        if channels % 4 != 0:
+            raise ValueError("Channels for positional embedding must be divisible by 4")
+        grid_y, grid_x = torch.meshgrid(
+            torch.arange(height, device=device, dtype=dtype),
+            torch.arange(width, device=device, dtype=dtype),
+            indexing="ij",
+        )
+        omega = torch.arange(channels // 4, device=device, dtype=dtype) / (channels // 4)
+        omega = 1.0 / (10000 ** omega)
+        out_y = torch.einsum("hw,c->hwc", grid_y, omega)
+        out_x = torch.einsum("hw,c->hwc", grid_x, omega)
+        pos_emb = torch.cat([torch.sin(out_y), torch.cos(out_y), torch.sin(out_x), torch.cos(out_x)], dim=-1)
+        pos_emb = pos_emb.reshape(1, height * width, channels)
+        return pos_emb
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        b, c, h, w = x.shape
+        tokens = x.flatten(2).transpose(1, 2)  # (B, HW, C)
+        pos_emb = self._build_2d_sincos_position_embedding(h, w, c, x.device, x.dtype)
+        tokens = tokens + pos_emb
+        encoded = self.encoder(tokens)
+        return encoded.transpose(1, 2).reshape(b, c, h, w)
+
+
 class UpBlock(nn.Module):
     def __init__(self, in_channels: int, skip_channels: int, out_channels: int):
         super().__init__()
@@ -109,6 +148,7 @@ class PRPSegmenter(nn.Module):
 
         self.prompt_encoder = PromptEncoder(in_channels=1, out_channels=512)
         self.attention = CrossAttentionFusion(channels=512)
+        self.vit_refiner = ViTFeatureRefiner(channels=512, num_layers=2, num_heads=8)
 
         self.decoder = UNetDecoder(
             encoder_channels=[64, 64, 128, 256, 512]
@@ -125,6 +165,7 @@ class PRPSegmenter(nn.Module):
         prompt_feat = F.interpolate(prompt_feat, size=x5.shape[2:], mode="bilinear", align_corners=False)
 
         fused = self.attention(prompt_feat, x5)
+        fused = self.vit_refiner(fused)
 
         logits = self.decoder([x1, x2, x3, x4, fused])
         logits = F.interpolate(logits, size=image.shape[2:], mode="bilinear", align_corners=False)
