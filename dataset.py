@@ -1,7 +1,7 @@
 import os
 import random
 from glob import glob
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import albumentations as A
 import cv2
@@ -19,6 +19,10 @@ class PRPDataset(torch.utils.data.Dataset):
     A random target mask is selected every epoch, and a dynamic click heatmap is
     generated from an eroded version of that mask to avoid overfitting to fixed
     coordinates.
+
+    Additional semantic context is provided by four auxiliary masks named
+    aux_0.png ... aux_3.png under each case directory. These masks are stacked
+    with the RGB image and Gaussian heatmap to form the 8-channel network input.
     """
 
     def __init__(
@@ -69,7 +73,15 @@ class PRPDataset(torch.utils.data.Dataset):
             )
         )
 
-        return A.Compose(transforms, additional_targets={"mask": "mask"})
+        additional_targets = {
+            "mask": "mask",
+            "aux0": "mask",
+            "aux1": "mask",
+            "aux2": "mask",
+            "aux3": "mask",
+        }
+
+        return A.Compose(transforms, additional_targets=additional_targets)
 
     def _load_image(self, case_dir: str) -> np.ndarray:
         image_path = os.path.join(case_dir, "image.png")
@@ -100,6 +112,21 @@ class PRPDataset(torch.utils.data.Dataset):
             raise FileNotFoundError(f"Could not read mask: {mask_path}")
         _, mask_bin = cv2.threshold(mask, 127, 1, cv2.THRESH_BINARY)
         return mask_bin.astype(np.uint8)
+
+    def _load_auxiliary_masks(self, case_dir: str) -> List[np.ndarray]:
+        aux_masks: List[np.ndarray] = []
+        for idx in range(4):
+            aux_path = os.path.join(case_dir, f"aux_{idx}.png")
+            if not os.path.exists(aux_path):
+                raise FileNotFoundError(f"Missing auxiliary mask: {aux_path}")
+
+            aux = cv2.imread(aux_path, cv2.IMREAD_GRAYSCALE)
+            if aux is None:
+                raise FileNotFoundError(f"Could not read auxiliary mask: {aux_path}")
+            _, aux_bin = cv2.threshold(aux, 127, 1, cv2.THRESH_BINARY)
+            aux_masks.append(aux_bin.astype(np.uint8))
+
+        return aux_masks
 
     @staticmethod
     def _generate_heatmap(height: int, width: int, center: Tuple[int, int], sigma: float = 15.0) -> np.ndarray:
@@ -134,10 +161,19 @@ class PRPDataset(torch.utils.data.Dataset):
         case_dir = self.cases[idx]
         image = self._load_image(case_dir)
         mask = self._load_random_mask(case_dir)
+        aux_masks = self._load_auxiliary_masks(case_dir)
 
-        augmented = self.transform(image=image, mask=mask)
+        augmented = self.transform(
+            image=image,
+            mask=mask,
+            aux0=aux_masks[0],
+            aux1=aux_masks[1],
+            aux2=aux_masks[2],
+            aux3=aux_masks[3],
+        )
         image = augmented["image"]
         mask = augmented["mask"]
+        aux_masks = [augmented["aux0"], augmented["aux1"], augmented["aux2"], augmented["aux3"]]
 
         h, w = mask.shape
         click_y, click_x = self._sample_click(mask)
@@ -146,12 +182,29 @@ class PRPDataset(torch.utils.data.Dataset):
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         image = image.astype(np.float32) / 255.0
 
-        tensor_transform = A.Compose([ToTensorV2()], additional_targets={"heatmap": "mask"})
-        tensors = tensor_transform(image=image, mask=mask, heatmap=heatmap)
-        image_tensor = tensors["image"]
-        mask_tensor = tensors["mask"].unsqueeze(0).float()
-        #heatmap_tensor = tensors["heatmap"].unsqueeze(0)
-        #heatmap_tensor = torch.from_numpy(tensors["heatmap"]).float().unsqueeze(0)
-        heatmap_tensor = tensors["heatmap"].float().unsqueeze(0)
+        additional_targets: Dict[str, str] = {
+            "heatmap": "mask",
+            "aux0": "mask",
+            "aux1": "mask",
+            "aux2": "mask",
+            "aux3": "mask",
+        }
+        tensor_transform = A.Compose([ToTensorV2()], additional_targets=additional_targets)
+        tensors = tensor_transform(
+            image=image,
+            mask=mask,
+            heatmap=heatmap,
+            aux0=aux_masks[0],
+            aux1=aux_masks[1],
+            aux2=aux_masks[2],
+            aux3=aux_masks[3],
+        )
 
-        return image_tensor, heatmap_tensor, mask_tensor
+        image_tensor = tensors["image"].float()
+        mask_tensor = tensors["mask"].unsqueeze(0).float()
+        heatmap_tensor = tensors["heatmap"].float().unsqueeze(0)
+        aux_tensors = torch.stack(
+            [tensors["aux0"], tensors["aux1"], tensors["aux2"], tensors["aux3"]], dim=0
+        ).float()
+
+        return image_tensor, heatmap_tensor, aux_tensors, mask_tensor
