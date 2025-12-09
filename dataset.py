@@ -8,6 +8,7 @@ import cv2
 import numpy as np
 import torch
 from albumentations.pytorch import ToTensorV2
+from albumentations.core.transforms_interface import BasicTransform
 
 
 class PRPDataset(torch.utils.data.Dataset):
@@ -25,11 +26,13 @@ class PRPDataset(torch.utils.data.Dataset):
         root_dir: str,
         image_extensions: Optional[List[str]] = None,
         augment: bool = True,
+        target_size: Tuple[int, int] = (1280, 1280),
     ) -> None:
         super().__init__()
         self.root_dir = root_dir
         self.augment = augment
         self.image_extensions = image_extensions or [".png", ".jpg", ".jpeg", ".tif", ".tiff"]
+        self.target_size = target_size
 
         self.cases = sorted([d for d in glob(os.path.join(root_dir, "*")) if os.path.isdir(d)])
         if not self.cases:
@@ -41,12 +44,31 @@ class PRPDataset(torch.utils.data.Dataset):
         return len(self.cases)
 
     def _build_transform(self) -> A.Compose:
-        transforms = [
-            A.ShiftScaleRotate(shift_limit=0.05, scale_limit=0.05, rotate_limit=10, p=0.7, border_mode=cv2.BORDER_REFLECT),
-            A.HorizontalFlip(p=0.5),
-            A.HueSaturationValue(hue_shift_limit=5, sat_shift_limit=8, val_shift_limit=8, p=0.5),
-            A.RandomBrightnessContrast(brightness_limit=0.1, contrast_limit=0.1, p=0.5),
-        ]
+        transforms: list[BasicTransform] = []
+        if self.augment:
+            transforms.extend(
+                [
+                    A.ShiftScaleRotate(
+                        shift_limit=0.05,
+                        scale_limit=0.05,
+                        rotate_limit=10,
+                        p=0.7,
+                        border_mode=cv2.BORDER_REFLECT,
+                    ),
+                    A.HorizontalFlip(p=0.5),
+                    A.HueSaturationValue(hue_shift_limit=5, sat_shift_limit=8, val_shift_limit=8, p=0.5),
+                    A.RandomBrightnessContrast(brightness_limit=0.1, contrast_limit=0.1, p=0.5),
+                ]
+            )
+
+        transforms.append(
+            A.Resize(
+                height=self.target_size[0],
+                width=self.target_size[1],
+                interpolation=cv2.INTER_LINEAR,
+            )
+        )
+
         return A.Compose(transforms, additional_targets={"mask": "mask"})
 
     def _load_image(self, case_dir: str) -> np.ndarray:
@@ -105,7 +127,7 @@ class PRPDataset(torch.utils.data.Dataset):
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         image = image.astype(np.float32) / 255.0
 
-        tensor_transform = A.Compose([ToTensorV2()])
+        tensor_transform = A.Compose([ToTensorV2()], additional_targets={"heatmap": "mask"})
         tensors = tensor_transform(image=image, mask=mask, heatmap=heatmap)
         image_tensor = tensors["image"]
         mask_tensor = tensors["mask"].unsqueeze(0).float()
