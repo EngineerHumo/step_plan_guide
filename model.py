@@ -127,4 +127,5 @@ class PRPSegmenter(nn.Module):
         fused = self.attention(prompt_feat, x5)
 
         logits = self.decoder([x1, x2, x3, x4, fused])
+        logits = F.interpolate(logits, size=image.shape[2:], mode="bilinear", align_corners=False)
         return torch.sigmoid(logits)
