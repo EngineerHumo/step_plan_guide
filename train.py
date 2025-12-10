@@ -28,7 +28,6 @@ def tensor_to_image(tensor: torch.Tensor) -> "np.ndarray":  # type: ignore[name-
 def save_validation_batch(
     images: torch.Tensor,
     heatmaps: torch.Tensor,
-    aux_masks: torch.Tensor,
     masks: torch.Tensor,
     preds: torch.Tensor,
     save_root: str,
@@ -79,12 +78,11 @@ def evaluate(
     dice_scores = []
     iou_scores = []
     with torch.no_grad():
-        for batch_idx, (images, heatmaps, aux_masks, masks) in enumerate(loader):
+        for batch_idx, (images, heatmaps, masks) in enumerate(loader):
             images = images.to(device)
             heatmaps = heatmaps.to(device)
-            aux_masks = aux_masks.to(device)
             masks = masks.to(device)
-            preds = model(images, heatmaps, aux_masks)
+            preds = model(images, heatmaps)
             dice_scores.append(dice_coefficient(preds, masks).mean().item())
             iou_scores.append(iou_score(preds, masks).mean().item())
 
@@ -92,7 +90,6 @@ def evaluate(
                 save_validation_batch(
                     images=images,
                     heatmaps=heatmaps,
-                    aux_masks=aux_masks,
                     masks=masks,
                     preds=preds,
                     save_root=save_root,
@@ -144,13 +141,12 @@ def train(
     for epoch in range(1, epochs + 1):
         epoch_loss = 0.0
         progress = tqdm(train_loader, desc=f"Epoch {epoch}/{epochs}")
-        for images, heatmaps, aux_masks, masks in progress:
+        for images, heatmaps, masks in progress:
             images = images.to(device)
             heatmaps = heatmaps.to(device)
-            aux_masks = aux_masks.to(device)
             masks = masks.to(device)
 
-            preds = model(images, heatmaps, aux_masks)
+            preds = model(images, heatmaps)
             loss = dice_bce_loss(preds, masks)
 
             optimizer.zero_grad()
@@ -163,7 +159,6 @@ def train(
             if viz is not None:
                 viz.image(images[0].cpu(), win="input_image", opts={"title": f"Input Epoch {epoch}"})
                 viz.image(heatmaps[0].cpu(), win="heatmap", opts={"title": f"Heatmap Epoch {epoch}"})
-                viz.image(aux_masks[0].cpu(), win="auxiliary", opts={"title": f"Auxiliary Epoch {epoch}"})
                 viz.image(masks[0].cpu(), win="ground_truth", opts={"title": f"Mask Epoch {epoch}"})
                 viz.image(preds[0].detach().cpu(), win="prediction", opts={"title": f"Prediction Epoch {epoch}"})
 
