@@ -141,6 +141,33 @@ def train(
     for epoch in range(1, epochs + 1):
         epoch_loss = 0.0
         progress = tqdm(train_loader, desc=f"Epoch {epoch}/{epochs}")
+
+        def log_to_visdom(
+            batch_images: torch.Tensor, batch_heatmaps: torch.Tensor, batch_masks: torch.Tensor, batch_preds: torch.Tensor
+        ) -> None:
+            """Visualize the current batch on Visdom."""
+
+            if viz is None:
+                return
+
+            def _prep_single(t: torch.Tensor) -> torch.Tensor:
+                tensor = t.detach().cpu().clamp(0, 1)
+                if tensor.dim() == 2:
+                    tensor = tensor.unsqueeze(0)
+                if tensor.shape[0] == 1:
+                    tensor = tensor.repeat(3, 1, 1)
+                return tensor
+
+            img = _prep_single(batch_images[0])
+            heatmap = _prep_single(batch_heatmaps[0])
+            gt = _prep_single(batch_masks[0])
+            pred = _prep_single(batch_preds[0])
+
+            viz.image(img, win="input_image", opts={"title": f"Input Epoch {epoch}"})
+            viz.image(heatmap, win="heatmap", opts={"title": f"Heatmap Epoch {epoch}"})
+            viz.image(gt, win="ground_truth", opts={"title": f"Ground Truth Epoch {epoch}"})
+            viz.image(pred, win="prediction", opts={"title": f"Prediction Epoch {epoch}"})
+
         for images, heatmaps, masks in progress:
             images = images.to(device)
             heatmaps = heatmaps.to(device)
@@ -156,11 +183,7 @@ def train(
             epoch_loss += loss.item()
             progress.set_postfix(loss=loss.item())
 
-            if viz is not None:
-                viz.image(images[0].cpu(), win="input_image", opts={"title": f"Input Epoch {epoch}"})
-                viz.image(heatmaps[0].cpu(), win="heatmap", opts={"title": f"Heatmap Epoch {epoch}"})
-                viz.image(masks[0].cpu(), win="ground_truth", opts={"title": f"Mask Epoch {epoch}"})
-                viz.image(preds[0].detach().cpu(), win="prediction", opts={"title": f"Prediction Epoch {epoch}"})
+            log_to_visdom(images, heatmaps, masks, preds)
 
         scheduler.step()
         avg_loss = epoch_loss / len(train_loader)
