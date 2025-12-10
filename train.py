@@ -103,7 +103,7 @@ def evaluate(
 def train(
     train_dir: str,
     val_dir: Optional[str],
-    epochs: int = 50,
+    epochs: int = 200,
     batch_size: int = 2,
     lr: float = 1e-4,
     num_workers: int = 4,
