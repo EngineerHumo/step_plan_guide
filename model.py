@@ -32,7 +32,12 @@ class CrossAttentionFusion(nn.Module):
         self.q_proj = nn.Conv2d(channels, channels, kernel_size=1)
         self.k_proj = nn.Conv2d(channels, channels, kernel_size=1)
         self.v_proj = nn.Conv2d(channels, channels, kernel_size=1)
-        self.gamma = nn.Parameter(torch.tensor(0.0))
+        # A prompt skip connection ensures prompt-dependent signals survive even
+        # if the attention branch is still warming up.
+        self.prompt_skip = nn.Conv2d(channels, channels, kernel_size=1)
+        # Start with full-strength attention to keep prompts influential from
+        # the first step instead of relying on a tiny residual gate.
+        self.gamma = nn.Parameter(torch.tensor(1.0))
 
     def forward(self, prompt_feat: torch.Tensor, image_feat: torch.Tensor) -> torch.Tensor:
         """
@@ -54,7 +59,9 @@ class CrossAttentionFusion(nn.Module):
         attn_probs = torch.softmax(attn_scores, dim=-1)
         attn_out = torch.matmul(attn_probs, v)  # (B, H*W, C)
         attn_out = attn_out.transpose(1, 2).reshape(b, c, h, w)
-        return image_feat + self.gamma * attn_out
+
+        prompt_residual = self.prompt_skip(prompt_feat)
+        return image_feat + prompt_residual + self.gamma * attn_out
 
 
 class SpatialMLPBlock(nn.Module):
