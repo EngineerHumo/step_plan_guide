@@ -104,7 +104,7 @@ def train(
     train_dir: str,
     val_dir: Optional[str],
     epochs: int = 200,
-    batch_size: int = 2,
+    batch_size: int = 8,
     lr: float = 1e-4,
     num_workers: int = 4,
     device: str = "cuda" if torch.cuda.is_available() else "cpu",
@@ -209,8 +209,8 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Interactive PRP area segmentation trainer")
     parser.add_argument("--train_dir", type=str, default="dataset/train", help="Path to training dataset")
     parser.add_argument("--val_dir", type=str, default="dataset/val", help="Path to validation dataset")
-    parser.add_argument("--epochs", type=int, default=50)
-    parser.add_argument("--batch_size", type=int, default=2)
+    parser.add_argument("--epochs", type=int, default=200)
+    parser.add_argument("--batch_size", type=int, default=8)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--num_workers", type=int, default=4)
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
