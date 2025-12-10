@@ -14,6 +14,14 @@ from model import PRPSegmenter
 from utils import dice_coefficient, iou_score
 
 
+def default_device() -> str:
+    """Prefer GPU 1 when multiple CUDA devices are available."""
+
+    if torch.cuda.is_available():
+        return "cuda:1" if torch.cuda.device_count() > 1 else "cuda:0"
+    return "cpu"
+
+
 def ensure_dir(path: str) -> None:
     os.makedirs(path, exist_ok=True)
 
@@ -110,7 +118,7 @@ def train(
     batch_size: int = 2,
     lr: float = 1e-4,
     num_workers: int = 4,
-    device: str = "cuda" if torch.cuda.is_available() else "cpu",
+    device: str = default_device(),
     use_visdom: bool = False,
     visdom_env: str = "prp_segmentation",
     visdom_port: int = 8097,
@@ -195,7 +203,7 @@ def parse_args():
     parser.add_argument("--batch_size", type=int, default=2)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--num_workers", type=int, default=4)
-    parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--device", type=str, default=default_device())
     parser.add_argument("--use_visdom", action="store_true", help="Enable Visdom visualization")
     parser.add_argument("--visdom_env", type=str, default="prp_segmentation", help="Visdom environment name")
     parser.add_argument("--visdom_port", type=int, default=8097, help="Visdom server port")
