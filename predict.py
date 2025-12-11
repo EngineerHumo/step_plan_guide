@@ -225,13 +225,15 @@ def main():
             save_size,
         )
 
-        fig_res, axes = plt.subplots(1, 3, figsize=(12, 4))
+        fig_res, axes = plt.subplots(1, 4, figsize=(16, 4))
         axes[0].imshow(cv2.cvtColor(resized_bgr, cv2.COLOR_BGR2RGB))
         axes[0].set_title("原图")
         axes[1].imshow(prob_map, cmap="gray")
         axes[1].set_title("网络输出概率")
         axes[2].imshow(processed_mask, cmap="gray")
         axes[2].set_title("后处理分割")
+        axes[3].imshow(cv2.cvtColor(overlay_bgr, cv2.COLOR_BGR2RGB))
+        axes[3].set_title("六边形填充")
         for a in axes:
             a.axis("off")
         plt.tight_layout()
