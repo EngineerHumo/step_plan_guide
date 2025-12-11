@@ -22,10 +22,11 @@ def load_model(model_path: str, device: torch.device) -> PRPSegmenter:
     return model
 
 
-def load_image(image_path: str) -> Tuple[np.ndarray, torch.Tensor]:
+def load_image(image_path: str, target_size: Tuple[int, int]) -> Tuple[np.ndarray, torch.Tensor]:
     bgr = cv2.imread(image_path, cv2.IMREAD_COLOR)
     if bgr is None:
         raise FileNotFoundError(f"无法读取图像：{image_path}")
+    bgr = cv2.resize(bgr, target_size, interpolation=cv2.INTER_LINEAR)
     rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
     rgb_float = rgb.astype(np.float32) / 255.0
     tensor = torch.from_numpy(rgb_float).permute(2, 0, 1).unsqueeze(0)
@@ -160,22 +161,31 @@ def save_results(
     prob_map: np.ndarray,
     processed_mask: np.ndarray,
     overlay_bgr: np.ndarray,
+    save_size: Tuple[int, int],
 ):
     os.makedirs(output_dir, exist_ok=True)
     prob_path = os.path.join(output_dir, f"prediction_prob_{click_index}.png")
     mask_path = os.path.join(output_dir, f"segmentation_mask_{click_index}.png")
     overlay_path = os.path.join(output_dir, f"hex_overlay_{click_index}.png")
 
-    prob_vis = (prob_map * 255).astype(np.uint8)
+    prob_resized = cv2.resize(prob_map, save_size, interpolation=cv2.INTER_LINEAR)
+    prob_vis = (prob_resized * 255).astype(np.uint8)
+
+    mask_resized = cv2.resize(processed_mask, save_size, interpolation=cv2.INTER_NEAREST)
+    overlay_resized = cv2.resize(overlay_bgr, save_size, interpolation=cv2.INTER_LINEAR)
+
     cv2.imwrite(prob_path, prob_vis)
-    cv2.imwrite(mask_path, (processed_mask * 255).astype(np.uint8))
-    cv2.imwrite(overlay_path, overlay_bgr)
+    cv2.imwrite(mask_path, (mask_resized * 255).astype(np.uint8))
+    cv2.imwrite(overlay_path, overlay_resized)
     print(f"保存概率图：{prob_path}")
     print(f"保存分割掩码：{mask_path}")
     print(f"保存六边形填充结果：{overlay_path}")
 
 
 def main():
+    infer_size = (1280, 1280)
+    save_size = (1240, 1240)
+
     parser = argparse.ArgumentParser(description="基于点击的交互式分割预测")
     parser.add_argument("--model", required=True, help="模型权重路径")
     parser.add_argument("--image", required=True, help="输入图像路径")
@@ -186,11 +196,11 @@ def main():
 
     device = torch.device(args.device)
     model = load_model(args.model, device)
-    orig_bgr, image_tensor = load_image(args.image)
+    resized_bgr, image_tensor = load_image(args.image, target_size=infer_size)
 
     height, width = image_tensor.shape[2:]
     fig, ax = plt.subplots()
-    ax.imshow(cv2.cvtColor(orig_bgr, cv2.COLOR_BGR2RGB))
+    ax.imshow(cv2.cvtColor(resized_bgr, cv2.COLOR_BGR2RGB))
     ax.set_title("点击图像以生成分割")
     plt.axis("off")
 
@@ -203,13 +213,20 @@ def main():
         print(f"收到点击：({x}, {y})，开始推理……")
         prob_map, binary_mask = run_inference(model, device, image_tensor, (x, y), args.threshold)
         processed_mask = postprocess_mask(binary_mask, (y, x))
-        overlay_bgr = draw_hex_circles(orig_bgr, processed_mask)
+        overlay_bgr = draw_hex_circles(resized_bgr, processed_mask)
 
         click_state["count"] += 1
-        save_results(args.output, click_state["count"], prob_map, processed_mask, overlay_bgr)
+        save_results(
+            args.output,
+            click_state["count"],
+            prob_map,
+            processed_mask,
+            overlay_bgr,
+            save_size,
+        )
 
         fig_res, axes = plt.subplots(1, 3, figsize=(12, 4))
-        axes[0].imshow(cv2.cvtColor(orig_bgr, cv2.COLOR_BGR2RGB))
+        axes[0].imshow(cv2.cvtColor(resized_bgr, cv2.COLOR_BGR2RGB))
         axes[0].set_title("原图")
         axes[1].imshow(prob_map, cmap="gray")
         axes[1].set_title("网络输出概率")
