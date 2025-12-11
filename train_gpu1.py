@@ -15,10 +15,10 @@ from utils import dice_coefficient, iou_score
 
 
 def default_device() -> str:
-    """Prefer CUDA when available, defaulting to GPU 0 for multi-GPU training."""
+    """Prefer GPU 1 when multiple CUDA devices are available."""
 
     if torch.cuda.is_available():
-        return "cuda:0"
+        return "cuda:1" if torch.cuda.device_count() > 1 else "cuda:0"
     return "cpu"
 
 
@@ -111,9 +111,9 @@ def evaluate(
 def train(
     train_dir: str,
     val_dir: Optional[str],
-    epochs: int = 300,
-    batch_size: int = 16,
-    lr: float = 5e-4,
+    epochs: int = 200,
+    batch_size: int = 8,
+    lr: float = 1e-4,
     num_workers: int = 4,
     device: str = default_device(),
     use_visdom: bool = False,
@@ -130,11 +130,7 @@ def train(
         val_dataset = PRPDataset(val_dir, augment=False)
         val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
 
-    model = PRPSegmenter()
-    if torch.cuda.device_count() > 1 and device.type == "cuda":
-        print("Using DataParallel on GPUs: 0 and 1")
-        model = nn.DataParallel(model, device_ids=[0, 1])
-    model = model.to(device)
+    model = PRPSegmenter().to(device)
     optimizer = AdamW(model.parameters(), lr=lr)
     scheduler = CosineAnnealingLR(optimizer, T_max=epochs)
 
@@ -208,25 +204,23 @@ def train(
 
             if val_dice > best_val_dice:
                 best_val_dice = val_dice
-                model_to_save = model.module if isinstance(model, nn.DataParallel) else model
-                torch.save(model_to_save.state_dict(), os.path.join(output_dir, "best_model.pth"))
+                torch.save(model.state_dict(), os.path.join(output_dir, "best_model.pth"))
                 print(f"New best model saved with Val Dice {val_dice:.4f}")
 
         train_dice, train_iou = evaluate(model, train_loader, device)
         print(f"Epoch {epoch}: Train Dice={train_dice:.4f} | Train IoU={train_iou:.4f}")
 
-    model_to_save = model.module if isinstance(model, nn.DataParallel) else model
-    torch.save(model_to_save.state_dict(), os.path.join(output_dir, "final_model.pth"))
+    torch.save(model.state_dict(), os.path.join(output_dir, "final_model.pth"))
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Interactive PRP area segmentation trainer")
     parser.add_argument("--train_dir", type=str, default="dataset/train", help="Path to training dataset")
     parser.add_argument("--val_dir", type=str, default="dataset/val", help="Path to validation dataset")
-    parser.add_argument("--epochs", type=int, default=300)
-    parser.add_argument("--batch_size", type=int, default=16)
-    parser.add_argument("--lr", type=float, default=5e-4)
-    parser.add_argument("--num_workers", type=int, default=16)
+    parser.add_argument("--epochs", type=int, default=200)
+    parser.add_argument("--batch_size", type=int, default=8)
+    parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--num_workers", type=int, default=4)
     parser.add_argument("--device", type=str, default=default_device())
     parser.add_argument("--use_visdom", action="store_true", help="Enable Visdom visualization")
     parser.add_argument("--visdom_env", type=str, default="prp_segmentation", help="Visdom environment name")

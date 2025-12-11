@@ -187,10 +187,10 @@ def main():
     save_size = (1240, 1240)
 
     parser = argparse.ArgumentParser(description="基于点击的交互式分割预测")
-    parser.add_argument("--model", required=True, help="模型权重路径")
-    parser.add_argument("--image", required=True, help="输入图像路径")
-    parser.add_argument("--output", required=True, help="输出保存目录")
-    parser.add_argument("--threshold", type=float, default=0.4, help="分割阈值，默认0.4")
+    parser.add_argument("--model", default="C:/work space/prp/predict/best_model.pth", help="模型权重路径")
+    parser.add_argument("--image", default="C:/work space/prp/predict/val/case_0081/image.png", help="输入图像路径")
+    parser.add_argument("--output", default="C:/work space/prp/predict/run", help="输出保存目录")
+    parser.add_argument("--threshold", type=float, default=0.5, help="分割阈值，默认0.4")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu", help="计算设备")
     args = parser.parse_args()
 
