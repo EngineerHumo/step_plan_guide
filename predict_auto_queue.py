@@ -4,7 +4,6 @@ import os
 from typing import List, Optional, Tuple
 
 import cv2
-import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
@@ -190,6 +189,26 @@ def save_results(
     print(f"保存六边形填充结果：{overlay_path}")
 
 
+def save_merge_overlay(
+    output_dir: str, overlays: List[np.ndarray], save_size: Tuple[int, int], base_name: str
+):
+    if not overlays:
+        return
+
+    width, height = save_size
+    canvas = np.zeros((height * 3, width * 3, 3), dtype=np.uint8)
+    for idx, overlay in enumerate(overlays[:9]):
+        resized = cv2.resize(overlay, save_size, interpolation=cv2.INTER_LINEAR)
+        row, col = divmod(idx, 3)
+        y0, y1 = row * height, (row + 1) * height
+        x0, x1 = col * width, (col + 1) * width
+        canvas[y0:y1, x0:x1] = resized
+
+    output_path = os.path.join(output_dir, f"{base_name}_merge.png")
+    cv2.imwrite(output_path, canvas)
+    print(f"保存合并画布：{output_path}")
+
+
 def main():
     infer_size = (1280, 1280)
     save_size = (1240, 1240)
@@ -197,7 +216,7 @@ def main():
     parser = argparse.ArgumentParser(description="基于点击的交互式分割预测")
     parser.add_argument("--model", default="C:/work space/prp/predict/best_model.pth", help="模型权重路径")
     parser.add_argument("--image", default="C:/work space/prp/predict/val/case_0081/image.png", help="输入图像路径")
-    parser.add_argument("--output", default="C:/work space/prp/predict/run_auto", help="输出保存目录")
+    parser.add_argument("--output", default=None, help="输出保存目录（若为空则保存在原图路径下）")
     parser.add_argument("--threshold", type=float, default=0.5, help="分割阈值，默认0.4")
     parser.add_argument("--iterations", type=int, default=8, help="每个点的迭代次数")
     parser.add_argument("--circle_diameter", type=int, default=20, help="填充圆形的直径")
@@ -207,63 +226,80 @@ def main():
 
     device = torch.device(args.device)
     model = load_model(args.model, device)
-    resized_bgr, image_tensor = load_image(args.image, target_size=infer_size)
 
-    initial_points = [
-        (320, 320),
-        (320, 640),
-        (320, 960),
-        (640, 320),
-        (640, 640),
-        (640, 960),
-        (960, 320),
-        (960, 640),
-        (960, 960),
-    ]
+    input_path = args.image
+    if os.path.isdir(input_path):
+        image_files = [
+            os.path.join(input_path, f)
+            for f in sorted(os.listdir(input_path))
+            if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.tif', '.tiff'))
+        ]
+    elif os.path.isfile(input_path):
+        image_files = [input_path]
+    else:
+        raise FileNotFoundError(f"未找到输入路径：{input_path}")
 
-    overlays = []
-    radius = max(1, args.circle_diameter // 2)
-    for idx, point in enumerate(initial_points, start=1):
-        current_click = point
-        prob_map = None
-        processed_mask = None
-        for _ in range(args.iterations):
-            prob_map, binary_mask = run_inference(
-                model, device, image_tensor, current_click, args.threshold
+    for image_path in image_files:
+        resized_bgr, image_tensor = load_image(image_path, target_size=infer_size)
+
+        initial_points = [
+            (320, 320),
+            (320, 640),
+            (320, 960),
+            (640, 320),
+            (640, 640),
+            (640, 960),
+            (960, 320),
+            (960, 640),
+            (960, 960),
+        ]
+
+        overlays = []
+        radius = max(1, args.circle_diameter // 2)
+        for idx, point in enumerate(initial_points, start=1):
+            current_click = point
+            prob_map = None
+            processed_mask = None
+            for _ in range(args.iterations):
+                prob_map, binary_mask = run_inference(
+                    model, device, image_tensor, current_click, args.threshold
+                )
+                processed_mask = postprocess_mask(
+                    binary_mask, (current_click[1], current_click[0])
+                )
+                centroid = calculate_mask_centroid(processed_mask)
+                if centroid is None:
+                    break
+                current_click = centroid
+
+            if prob_map is None or processed_mask is None:
+                continue
+
+            overlay_bgr = draw_hex_circles(
+                resized_bgr, processed_mask, radius=radius, min_gap=args.circle_gap
             )
-            processed_mask = postprocess_mask(binary_mask, (current_click[1], current_click[0]))
-            centroid = calculate_mask_centroid(processed_mask)
-            if centroid is None:
-                break
-            current_click = centroid
+            overlays.append((overlay_bgr, prob_map, processed_mask))
 
-        if prob_map is None or processed_mask is None:
-            continue
-
-        overlay_bgr = draw_hex_circles(
-            resized_bgr, processed_mask, radius=radius, min_gap=args.circle_gap
-        )
-        overlays.append((overlay_bgr, prob_map, processed_mask))
-
-        save_results(
-            args.output,
-            idx,
-            prob_map,
-            processed_mask,
-            overlay_bgr,
-            save_size,
+        base_dir = os.path.dirname(image_path)
+        base_name = os.path.splitext(os.path.basename(image_path))[0]
+        output_dir = (
+            args.output if args.output else os.path.join(base_dir, base_name)
         )
 
-    if overlays:
-        fig, axes = plt.subplots(3, 3, figsize=(12, 12))
-        axes = axes.flatten()
-        for ax, (overlay_img, _, _) in zip(axes, overlays):
-            ax.imshow(cv2.cvtColor(overlay_img, cv2.COLOR_BGR2RGB))
-            ax.axis("off")
-        for ax in axes[len(overlays) :]:
-            ax.axis("off")
-        plt.tight_layout()
-        plt.show()
+        for idx, (overlay_img, prob_map, processed_mask) in enumerate(
+            overlays, start=1
+        ):
+            save_results(
+                output_dir,
+                idx,
+                prob_map,
+                processed_mask,
+                overlay_img,
+                save_size,
+            )
+
+        merge_overlays = [item[0] for item in overlays]
+        save_merge_overlay(output_dir, merge_overlays, save_size, base_name)
 
 
 if __name__ == "__main__":
