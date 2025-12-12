@@ -1,7 +1,7 @@
 import argparse
 import math
 import os
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import cv2
 import matplotlib.pyplot as plt
@@ -137,6 +137,14 @@ def draw_hex_circles(image_bgr: np.ndarray, mask: np.ndarray, radius: int = 10, 
     return overlay
 
 
+def calculate_mask_centroid(mask: np.ndarray) -> Optional[Tuple[int, int]]:
+    coords = np.argwhere(mask > 0)
+    if coords.size == 0:
+        return None
+    y_mean, x_mean = coords.mean(axis=0)
+    return int(round(x_mean)), int(round(y_mean))
+
+
 def run_inference(
     model: PRPSegmenter,
     device: torch.device,
@@ -191,6 +199,9 @@ def main():
     parser.add_argument("--image", default="C:/work space/prp/predict/val/case_0081/image.png", help="输入图像路径")
     parser.add_argument("--output", default="C:/work space/prp/predict/run", help="输出保存目录")
     parser.add_argument("--threshold", type=float, default=0.5, help="分割阈值，默认0.4")
+    parser.add_argument("--iterations", type=int, default=8, help="每个点的迭代次数")
+    parser.add_argument("--circle_diameter", type=int, default=20, help="填充圆形的直径")
+    parser.add_argument("--circle_gap", type=int, default=10, help="填充圆形之间的最小距离")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu", help="计算设备")
     args = parser.parse_args()
 
@@ -198,51 +209,61 @@ def main():
     model = load_model(args.model, device)
     resized_bgr, image_tensor = load_image(args.image, target_size=infer_size)
 
-    height, width = image_tensor.shape[2:]
-    fig, ax = plt.subplots()
-    ax.imshow(cv2.cvtColor(resized_bgr, cv2.COLOR_BGR2RGB))
-    ax.set_title("点击图像以生成分割")
-    plt.axis("off")
+    initial_points = [
+        (320, 320),
+        (320, 640),
+        (320, 960),
+        (640, 320),
+        (640, 640),
+        (640, 960),
+        (960, 320),
+        (960, 640),
+        (960, 960),
+    ]
 
-    click_state = {"count": 0}
+    overlays = []
+    radius = max(1, args.circle_diameter // 2)
+    for idx, point in enumerate(initial_points, start=1):
+        current_click = point
+        prob_map = None
+        processed_mask = None
+        for _ in range(args.iterations):
+            prob_map, binary_mask = run_inference(
+                model, device, image_tensor, current_click, args.threshold
+            )
+            processed_mask = postprocess_mask(binary_mask, (current_click[1], current_click[0]))
+            centroid = calculate_mask_centroid(processed_mask)
+            if centroid is None:
+                break
+            current_click = centroid
 
-    def on_click(event):
-        if event.inaxes != ax:
-            return
-        x, y = int(round(event.xdata)), int(round(event.ydata))
-        print(f"收到点击：({x}, {y})，开始推理……")
-        prob_map, binary_mask = run_inference(model, device, image_tensor, (x, y), args.threshold)
-        processed_mask = postprocess_mask(binary_mask, (y, x))
-        overlay_bgr = draw_hex_circles(resized_bgr, processed_mask)
+        if prob_map is None or processed_mask is None:
+            continue
 
-        click_state["count"] += 1
+        overlay_bgr = draw_hex_circles(
+            resized_bgr, processed_mask, radius=radius, min_gap=args.circle_gap
+        )
+        overlays.append((overlay_bgr, prob_map, processed_mask))
+
         save_results(
             args.output,
-            click_state["count"],
+            idx,
             prob_map,
             processed_mask,
             overlay_bgr,
             save_size,
         )
 
-        fig_res, axes = plt.subplots(1, 4, figsize=(16, 4))
-        axes[0].imshow(cv2.cvtColor(resized_bgr, cv2.COLOR_BGR2RGB))
-        axes[0].set_title("原图")
-        axes[1].imshow(prob_map, cmap="gray")
-        axes[1].set_title("网络输出概率")
-        axes[2].imshow(processed_mask, cmap="gray")
-        axes[2].set_title("后处理分割")
-        axes[3].imshow(cv2.cvtColor(overlay_bgr, cv2.COLOR_BGR2RGB))
-        axes[3].set_title("六边形填充")
-        for a in axes:
-            a.axis("off")
+    if overlays:
+        fig, axes = plt.subplots(3, 3, figsize=(12, 12))
+        axes = axes.flatten()
+        for ax, (overlay_img, _, _) in zip(axes, overlays):
+            ax.imshow(cv2.cvtColor(overlay_img, cv2.COLOR_BGR2RGB))
+            ax.axis("off")
+        for ax in axes[len(overlays) :]:
+            ax.axis("off")
         plt.tight_layout()
         plt.show()
-
-    cid = fig.canvas.mpl_connect('button_press_event', on_click)
-    print("窗口已准备好，请在图像上点击以开始分割。关闭窗口以结束。")
-    plt.show()
-    fig.canvas.mpl_disconnect(cid)
 
 
 if __name__ == "__main__":
