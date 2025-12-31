@@ -26,10 +26,16 @@ def ensure_dir(path: str) -> None:
     os.makedirs(path, exist_ok=True)
 
 
+IMAGENET_MEAN = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+IMAGENET_STD = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+
+
 def tensor_to_image(tensor: torch.Tensor) -> "np.ndarray":  # type: ignore[name-defined]
     import numpy as np
 
-    array = tensor.detach().cpu().clamp(0, 1).permute(1, 2, 0).numpy()
+    array = tensor.detach().cpu()
+    array = (array * IMAGENET_STD + IMAGENET_MEAN).clamp(0, 1)
+    array = array.permute(1, 2, 0).numpy()
     return (array * 255).astype(np.uint8)
 
 
@@ -54,9 +60,10 @@ def save_validation_batch(
         mask_np = masks[i, 0].detach().cpu().numpy()
         pred_np = preds[i, 0].detach().cpu().numpy()
 
-        click_y, click_x = divmod(heatmap_np.argmax(), heatmap_np.shape[1])
         image_with_click = image_np.copy()
-        cv2.circle(image_with_click, (int(click_x), int(click_y)), 8, (255, 0, 0), thickness=-1)
+        if heatmap_np.max() > 0:
+            click_y, click_x = divmod(heatmap_np.argmax(), heatmap_np.shape[1])
+            cv2.circle(image_with_click, (int(click_x), int(click_y)), 8, (255, 0, 0), thickness=-1)
 
         pred_mask = (pred_np > 0.5).astype(np.uint8) * 255
         gt_mask = (mask_np > 0.5).astype(np.uint8) * 255
@@ -68,10 +75,10 @@ def save_validation_batch(
         cv2.imwrite(os.path.join(epoch_dir, f"{basename}_gt.png"), gt_mask)
 
 
-def dice_bce_loss(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-    pred = pred.clamp(min=1e-6, max=1 - 1e-6)
-    dice = dice_coefficient(pred, target).mean()
-    bce = nn.functional.binary_cross_entropy(pred, target)
+def dice_bce_loss(logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    prob = torch.sigmoid(logits)
+    dice = dice_coefficient(prob, target).mean()
+    bce = nn.functional.binary_cross_entropy_with_logits(logits, target)
     return (1 - dice) + 0.5 * bce
 
 
@@ -90,16 +97,17 @@ def evaluate(
             images = images.to(device)
             heatmaps = heatmaps.to(device)
             masks = masks.to(device)
-            preds = model(images, heatmaps)
-            dice_scores.append(dice_coefficient(preds, masks).mean().item())
-            iou_scores.append(iou_score(preds, masks).mean().item())
+            logits = model(images, heatmaps)
+            prob = torch.sigmoid(logits)
+            dice_scores.append(dice_coefficient(prob, masks).mean().item())
+            iou_scores.append(iou_score(prob, masks).mean().item())
 
             if save_root and epoch is not None:
                 save_validation_batch(
                     images=images,
                     heatmaps=heatmaps,
                     masks=masks,
-                    preds=preds,
+                    preds=prob,
                     save_root=save_root,
                     epoch=epoch,
                     batch_idx=batch_idx,
@@ -122,12 +130,12 @@ def train(
     output_dir: str = "output",
 ):
     device = torch.device(device)
-    train_dataset = PRPDataset(train_dir, augment=True)
+    train_dataset = PRPDataset(train_dir, augment=True, no_click_prob=0.2)
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True)
 
     val_loader = None
     if val_dir and os.path.exists(val_dir):
-        val_dataset = PRPDataset(val_dir, augment=False)
+        val_dataset = PRPDataset(val_dir, augment=False, no_click_prob=0.0)
         val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
 
     model = PRPSegmenter()
@@ -185,8 +193,8 @@ def train(
             heatmaps = heatmaps.to(device)
             masks = masks.to(device)
 
-            preds = model(images, heatmaps)
-            loss = dice_bce_loss(preds, masks)
+            logits = model(images, heatmaps)
+            loss = dice_bce_loss(logits, masks)
 
             optimizer.zero_grad()
             loss.backward()
@@ -195,7 +203,8 @@ def train(
             epoch_loss += loss.item()
             progress.set_postfix(loss=loss.item())
 
-            log_to_visdom(images, heatmaps, masks, preds)
+            prob = torch.sigmoid(logits)
+            log_to_visdom(images, heatmaps, masks, prob)
 
         scheduler.step()
         avg_loss = epoch_loss / len(train_loader)
