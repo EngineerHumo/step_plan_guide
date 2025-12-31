@@ -26,17 +26,46 @@ def ensure_dir(path: str) -> None:
     os.makedirs(path, exist_ok=True)
 
 
-IMAGENET_MEAN = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
-IMAGENET_STD = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
-
-
 def tensor_to_image(tensor: torch.Tensor) -> "np.ndarray":  # type: ignore[name-defined]
     import numpy as np
 
-    array = tensor.detach().cpu()
-    array = (array * IMAGENET_STD + IMAGENET_MEAN).clamp(0, 1)
+    array = tensor.detach().cpu().clamp(0, 1)
     array = array.permute(1, 2, 0).numpy()
     return (array * 255).astype(np.uint8)
+
+
+def log_to_visdom(
+    viz: Optional["visdom.Visdom"],
+    epoch: int,
+    phase: str,
+    batch_images: torch.Tensor,
+    batch_heatmaps: torch.Tensor,
+    batch_masks: torch.Tensor,
+    batch_preds: torch.Tensor,
+) -> None:
+    """Visualize a random sample from the batch on Visdom."""
+
+    if viz is None or batch_images.shape[0] == 0:
+        return
+
+    def _prep_single(t: torch.Tensor) -> torch.Tensor:
+        tensor = t.detach().cpu().clamp(0, 1)
+        if tensor.dim() == 2:
+            tensor = tensor.unsqueeze(0)
+        if tensor.shape[0] == 1:
+            tensor = tensor.repeat(3, 1, 1)
+        return tensor
+
+    idx = int(torch.randint(0, batch_images.shape[0], (1,)).item())
+    img = _prep_single(batch_images[idx])
+    heatmap = _prep_single(batch_heatmaps[idx])
+    gt = _prep_single(batch_masks[idx])
+    pred = _prep_single(batch_preds[idx])
+
+    viz.image(img, win="input_image", opts={"title": f"{phase} Epoch {epoch} - Input"})
+    viz.image(heatmap, win="heatmap", opts={"title": f"{phase} Epoch {epoch} - Heatmap"})
+    viz.image(gt, win="ground_truth", opts={"title": f"{phase} Epoch {epoch} - Ground Truth"})
+    viz.image(pred, win="prediction", opts={"title": f"{phase} Epoch {epoch} - Prediction"})
 
 
 def save_validation_batch(
@@ -88,6 +117,8 @@ def evaluate(
     device: torch.device,
     save_root: Optional[str] = None,
     epoch: Optional[int] = None,
+    viz: Optional["visdom.Visdom"] = None,
+    phase: str = "Val",
 ) -> tuple[float, float]:
     model.eval()
     dice_scores = []
@@ -101,6 +132,9 @@ def evaluate(
             prob = torch.sigmoid(logits)
             dice_scores.append(dice_coefficient(prob, masks).mean().item())
             iou_scores.append(iou_score(prob, masks).mean().item())
+
+            if viz is not None and epoch is not None:
+                log_to_visdom(viz, epoch, phase, images, heatmaps, masks, prob)
 
             if save_root and epoch is not None:
                 save_validation_batch(
@@ -130,17 +164,27 @@ def train(
     output_dir: str = "output",
 ):
     device = torch.device(device)
-    train_dataset = PRPDataset(train_dir, augment=True, no_click_prob=0.2)
+    ensure_dir(output_dir)
+    log_path = os.path.join(output_dir, "train_log.txt")
+    with open(log_path, "w", encoding="utf-8") as f:
+        f.write("")
+
+    def log_message(message: str) -> None:
+        print(message)
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(message + "\n")
+
+    train_dataset = PRPDataset(train_dir, augment=True)
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True)
 
     val_loader = None
     if val_dir and os.path.exists(val_dir):
-        val_dataset = PRPDataset(val_dir, augment=False, no_click_prob=0.0)
-        val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
+        val_dataset = PRPDataset(val_dir, augment=False)
+        val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True)
 
     model = PRPSegmenter()
     if torch.cuda.device_count() > 1 and device.type == "cuda":
-        print("Using DataParallel on GPUs: 0 and 1")
+        log_message("Using DataParallel on GPUs: 0 and 1")
         model = nn.DataParallel(model, device_ids=[0, 1])
     model = model.to(device)
     optimizer = AdamW(model.parameters(), lr=lr)
@@ -152,41 +196,15 @@ def train(
 
         viz = visdom.Visdom(env=visdom_env, port=visdom_port)
         if not viz.check_connection():
-            print("[Visdom] Connection failed. Visualizations will be skipped.")
+            log_message("[Visdom] Connection failed. Visualizations will be skipped.")
             viz = None
 
-    ensure_dir(output_dir)
     best_val_dice = float("-inf")
+    best_models: list[tuple[float, int, str]] = []
 
     for epoch in range(1, epochs + 1):
         epoch_loss = 0.0
         progress = tqdm(train_loader, desc=f"Epoch {epoch}/{epochs}")
-
-        def log_to_visdom(
-            batch_images: torch.Tensor, batch_heatmaps: torch.Tensor, batch_masks: torch.Tensor, batch_preds: torch.Tensor
-        ) -> None:
-            """Visualize the current batch on Visdom."""
-
-            if viz is None:
-                return
-
-            def _prep_single(t: torch.Tensor) -> torch.Tensor:
-                tensor = t.detach().cpu().clamp(0, 1)
-                if tensor.dim() == 2:
-                    tensor = tensor.unsqueeze(0)
-                if tensor.shape[0] == 1:
-                    tensor = tensor.repeat(3, 1, 1)
-                return tensor
-
-            img = _prep_single(batch_images[0])
-            heatmap = _prep_single(batch_heatmaps[0])
-            gt = _prep_single(batch_masks[0])
-            pred = _prep_single(batch_preds[0])
-
-            viz.image(img, win="input_image", opts={"title": f"Input Epoch {epoch}"})
-            viz.image(heatmap, win="heatmap", opts={"title": f"Heatmap Epoch {epoch}"})
-            viz.image(gt, win="ground_truth", opts={"title": f"Ground Truth Epoch {epoch}"})
-            viz.image(pred, win="prediction", opts={"title": f"Prediction Epoch {epoch}"})
 
         for images, heatmaps, masks in progress:
             images = images.to(device)
@@ -204,28 +222,43 @@ def train(
             progress.set_postfix(loss=loss.item())
 
             prob = torch.sigmoid(logits)
-            log_to_visdom(images, heatmaps, masks, prob)
+            log_to_visdom(viz, epoch, "Train", images, heatmaps, masks, prob)
 
         scheduler.step()
         avg_loss = epoch_loss / len(train_loader)
-        print(f"Epoch {epoch}: Train Loss={avg_loss:.4f}")
+        log_message(f"Epoch {epoch}: Train Loss={avg_loss:.4f}")
 
         if val_loader:
             val_save_dir = os.path.join(output_dir, "val_outputs")
-            val_dice, val_iou = evaluate(model, val_loader, device, save_root=val_save_dir, epoch=epoch)
-            print(f"Epoch {epoch}: Val Dice={val_dice:.4f} | Val IoU={val_iou:.4f}")
+            val_dice, val_iou = evaluate(
+                model, val_loader, device, save_root=val_save_dir, epoch=epoch, viz=viz, phase="Val"
+            )
+            log_message(f"Epoch {epoch}: Val Dice={val_dice:.4f} | Val IoU={val_iou:.4f}")
+
+            model_to_save = model.module if isinstance(model, nn.DataParallel) else model
+            candidate_name = f"best_model_epoch{epoch:03d}_dice{val_dice:.4f}.pth"
+            candidate_path = os.path.join(output_dir, candidate_name)
+            torch.save(model_to_save.state_dict(), candidate_path)
+            best_models.append((val_dice, epoch, candidate_path))
+            best_models.sort(key=lambda item: item[0], reverse=True)
+            if len(best_models) > 3:
+                _, _, drop_path = best_models.pop()
+                if os.path.exists(drop_path):
+                    log_message(f"Removed checkpoint outside top-3: {os.path.basename(drop_path)}")
+                    os.remove(drop_path)
+            log_message(f"Checkpoint considered for top-3: {candidate_name}")
 
             if val_dice > best_val_dice:
                 best_val_dice = val_dice
-                model_to_save = model.module if isinstance(model, nn.DataParallel) else model
                 torch.save(model_to_save.state_dict(), os.path.join(output_dir, "best_model.pth"))
-                print(f"New best model saved with Val Dice {val_dice:.4f}")
+                log_message(f"New best model saved with Val Dice {val_dice:.4f}")
 
         train_dice, train_iou = evaluate(model, train_loader, device)
-        print(f"Epoch {epoch}: Train Dice={train_dice:.4f} | Train IoU={train_iou:.4f}")
+        log_message(f"Epoch {epoch}: Train Dice={train_dice:.4f} | Train IoU={train_iou:.4f}")
 
     model_to_save = model.module if isinstance(model, nn.DataParallel) else model
     torch.save(model_to_save.state_dict(), os.path.join(output_dir, "final_model.pth"))
+    log_message("Training completed. Final model saved.")
 
 
 def parse_args():

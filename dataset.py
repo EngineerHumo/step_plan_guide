@@ -26,14 +26,12 @@ class PRPDataset(torch.utils.data.Dataset):
         image_extensions: Optional[List[str]] = None,
         augment: bool = True,
         target_size: Tuple[int, int] = (1280, 1280),
-        no_click_prob: float = 0.0,
     ) -> None:
         super().__init__()
         self.root_dir = root_dir
         self.augment = augment
         self.image_extensions = image_extensions or [".png", ".jpg", ".jpeg", ".tif", ".tiff"]
         self.target_size = target_size
-        self.no_click_prob = no_click_prob
 
         self.cases = sorted([d for d in glob(os.path.join(root_dir, "*")) if os.path.isdir(d)])
         if not self.cases:
@@ -67,11 +65,8 @@ class PRPDataset(torch.utils.data.Dataset):
                         mask_value=0,
                     ),
                     A.HorizontalFlip(p=0.5),
-                    A.HueSaturationValue(hue_shift_limit=4, sat_shift_limit=6, val_shift_limit=6, p=0.5),
+                    A.HueSaturationValue(hue_shift_limit=5, sat_shift_limit=8, val_shift_limit=8, p=0.5),
                     A.RandomBrightnessContrast(brightness_limit=0.1, contrast_limit=0.1, p=0.5),
-                    A.GaussNoise(var_limit=(5.0, 20.0), p=0.2),
-                    A.MotionBlur(blur_limit=5, p=0.1),
-                    A.RandomGamma(gamma_limit=(90, 110), p=0.2),
                 ]
             )
 
@@ -121,38 +116,21 @@ class PRPDataset(torch.utils.data.Dataset):
         return heatmap.astype(np.float32)
 
     def _sample_click(self, mask: np.ndarray) -> Tuple[int, int]:
-        dist = cv2.distanceTransform(mask.astype(np.uint8), cv2.DIST_L2, 5)
-        if dist.max() <= 0:
+        kernel = np.ones((5, 5), np.uint8)
+        eroded = cv2.erode(mask, kernel, iterations=1)
+        ys, xs = np.where(eroded > 0)
+        if len(ys) == 0:
             ys, xs = np.where(mask > 0)
-            if len(ys) == 0:
-                h, w = mask.shape
-                return h // 2, w // 2
-            idx = np.random.choice(len(ys))
-            return int(ys[idx]), int(xs[idx])
-
-        y0, x0 = np.unravel_index(np.argmax(dist), dist.shape)
-        p_periphery = 0.3
-        band = 10.0
-        eps = 1e-3
-
-        periphery_mask = (dist > 0) & (dist <= band)
-        inner_mask = dist > band
-
-        if np.random.rand() < p_periphery and periphery_mask.any():
-            ys, xs = np.where(periphery_mask)
-            weights = 1.0 / (dist[ys, xs] + eps)
-            probs = weights / weights.sum()
-            idx = np.random.choice(len(ys), p=probs)
-            return int(ys[idx]), int(xs[idx])
-
-        candidate_mask = inner_mask if inner_mask.any() else (dist > 0)
-        ys, xs = np.where(candidate_mask)
         if len(ys) == 0:
             h, w = mask.shape
             return h // 2, w // 2
 
-        d = np.sqrt((ys - y0) ** 2 + (xs - x0) ** 2)
-        weights = 1.0 / (d + eps)
+        # Increase the selection probability for pixels closer to the mask centroid
+        centroid_y = float(ys.mean())
+        centroid_x = float(xs.mean())
+        distances = np.sqrt((ys - centroid_y) ** 2 + (xs - centroid_x) ** 2)
+        # Avoid division by zero; closer pixels get higher weights
+        weights = 1.0 / (distances + 1e-3)
         probs = weights / weights.sum()
         idx = np.random.choice(len(ys), p=probs)
         return int(ys[idx]), int(xs[idx])
@@ -169,23 +147,11 @@ class PRPDataset(torch.utils.data.Dataset):
         h, w = mask.shape
         click_y, click_x = self._sample_click(mask)
         heatmap = self._generate_heatmap(h, w, (click_y, click_x))
-
-        if self.augment and np.random.rand() < self.no_click_prob:
-            heatmap = np.zeros_like(heatmap, dtype=np.float32)
-
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
-        tensor_transform = A.Compose(
-            [
-                A.Normalize(
-                    mean=(0.485, 0.456, 0.406),
-                    std=(0.229, 0.224, 0.225),
-                    max_pixel_value=255.0,
-                ),
-                ToTensorV2(),
-            ],
-            additional_targets={"heatmap": "mask"},
-        )
+        image = image.astype(np.float32) / 255.0
+
+        tensor_transform = A.Compose([ToTensorV2()], additional_targets={"heatmap": "mask"})
         tensors = tensor_transform(image=image, mask=mask, heatmap=heatmap)
         image_tensor = tensors["image"]
         mask_tensor = tensors["mask"].unsqueeze(0).float()
