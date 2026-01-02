@@ -25,37 +25,25 @@ class PromptEncoder(nn.Module):
 
 
 class BiCrossAttentionFusion(nn.Module):
-    """Two-step robust cross attention with gating and LayerNorm."""
+    """Cross attention where the prompt queries the image features."""
 
     def __init__(self, channels: int = 512, num_heads: int = 8):
         super().__init__()
-        self.attn_img = nn.MultiheadAttention(embed_dim=channels, num_heads=num_heads, batch_first=True)
-        self.attn_prompt = nn.MultiheadAttention(embed_dim=channels, num_heads=num_heads, batch_first=True)
-        self.ln_img1 = nn.LayerNorm(channels)
-        self.ln_prompt1 = nn.LayerNorm(channels)
-        self.ln_img2 = nn.LayerNorm(channels)
-        self.ln_prompt2 = nn.LayerNorm(channels)
-        self.gate1 = nn.Parameter(torch.tensor(-2.0))
-        self.gate2 = nn.Parameter(torch.tensor(-2.0))
+        self.scale = (channels // num_heads) ** -0.5
 
     def forward(self, img_feat: torch.Tensor, prompt_feat: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         b, c, h, w = img_feat.shape
         img_tokens = img_feat.flatten(2).transpose(1, 2)  # (B, HW, C)
         prompt_tokens = prompt_feat.flatten(2).transpose(1, 2)  # (B, HW, C)
 
-        img_norm = self.ln_img1(img_tokens)
-        prompt_norm = self.ln_prompt1(prompt_tokens)
-        attn_out1, _ = self.attn_img(query=img_norm, key=prompt_norm, value=prompt_norm)
-        img_tokens = img_tokens + torch.sigmoid(self.gate1) * attn_out1
+        attn_scores = torch.matmul(prompt_tokens, img_tokens.transpose(1, 2)) * self.scale
+        attn_weights = F.softmax(attn_scores, dim=-1)
+        attn_out = torch.matmul(attn_weights, img_tokens)
 
-        prompt_norm2 = self.ln_prompt2(prompt_tokens)
-        img_norm2 = self.ln_img2(img_tokens)
-        attn_out2, _ = self.attn_prompt(query=prompt_norm2, key=img_norm2, value=img_norm2)
-        prompt_tokens = prompt_tokens + torch.sigmoid(self.gate2) * attn_out2
-
-        img_out = img_tokens.transpose(1, 2).reshape(b, c, h, w)
-        prompt_out = prompt_tokens.transpose(1, 2).reshape(b, c, h, w)
-        return img_out, prompt_out
+        fused_tokens = img_tokens + attn_out
+        fused_img = fused_tokens.transpose(1, 2).reshape(b, c, h, w)
+        prompt_out = prompt_feat
+        return fused_img, prompt_out
 
 
 class ViTFeatureRefiner(nn.Module):
