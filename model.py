@@ -25,25 +25,42 @@ class PromptEncoder(nn.Module):
 
 
 class BiCrossAttentionFusion(nn.Module):
-    """Cross attention where the prompt queries the image features."""
+    """Bidirectional cross attention between prompt and image tokens."""
 
     def __init__(self, channels: int = 512, num_heads: int = 8):
         super().__init__()
         self.scale = (channels // num_heads) ** -0.5
+        self.gamma_prompt_to_img = nn.Parameter(torch.tensor(1.0))
+        self.gamma_img_to_prompt = nn.Parameter(torch.tensor(1.0))
+        self.img_norm = nn.LayerNorm(channels)
+        self.prompt_norm = nn.LayerNorm(channels)
+        self.img_norm_post = nn.LayerNorm(channels)
+        self.prompt_norm_post = nn.LayerNorm(channels)
 
     def forward(self, img_feat: torch.Tensor, prompt_feat: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         b, c, h, w = img_feat.shape
         img_tokens = img_feat.flatten(2).transpose(1, 2)  # (B, HW, C)
         prompt_tokens = prompt_feat.flatten(2).transpose(1, 2)  # (B, HW, C)
 
-        attn_scores = torch.matmul(prompt_tokens, img_tokens.transpose(1, 2)) * self.scale
-        attn_weights = F.softmax(attn_scores, dim=-1)
-        attn_out = torch.matmul(attn_weights, img_tokens)
+        # Step 1: inject prompt information into image tokens (Q=image, K/V=prompt)
+        img_q = self.img_norm(img_tokens)
+        prompt_kv = self.prompt_norm(prompt_tokens)
+        inject_scores = torch.matmul(img_q, prompt_kv.transpose(1, 2)) * self.scale
+        inject_weights = F.softmax(inject_scores, dim=-1)
+        inject_out = torch.matmul(inject_weights, prompt_kv)
+        img_tokens = img_tokens + self.gamma_prompt_to_img * inject_out
 
-        fused_tokens = img_tokens + attn_out
-        fused_img = fused_tokens.transpose(1, 2).reshape(b, c, h, w)
-        prompt_out = prompt_feat
-        return fused_img, prompt_out
+        # Step 2: align prompt tokens with updated image tokens (Q=prompt, K/V=image)
+        prompt_q = self.prompt_norm_post(prompt_tokens)
+        img_kv = self.img_norm_post(img_tokens)
+        align_scores = torch.matmul(prompt_q, img_kv.transpose(1, 2)) * self.scale
+        align_weights = F.softmax(align_scores, dim=-1)
+        align_out = torch.matmul(align_weights, img_kv)
+        prompt_tokens = prompt_tokens + self.gamma_img_to_prompt * align_out
+
+        fused_img = img_tokens.transpose(1, 2).reshape(b, c, h, w)
+        fused_prompt = prompt_tokens.transpose(1, 2).reshape(b, c, h, w)
+        return fused_img, fused_prompt
 
 
 class ViTFeatureRefiner(nn.Module):
@@ -174,7 +191,6 @@ class PRPSegmenter(nn.Module):
         x5 = self.layer4(x4)                         # (B, 2048, H/32, W/32)
 
         x5p = self.proj_img(x5)                      # (B, 512, H/32, W/32)
-        x = self.vit1(x5p)
 
         has_click = heatmap.flatten(1).max(dim=1).values > 0
 
@@ -182,14 +198,15 @@ class PRPSegmenter(nn.Module):
             idx = has_click.nonzero(as_tuple=True)[0]
             heatmap_sel = heatmap[idx]
             prompt_feat = self.prompt_encoder(heatmap_sel)
-            prompt_feat = F.interpolate(prompt_feat, size=x.shape[2:], mode="bilinear", align_corners=False)
+            prompt_feat = F.interpolate(prompt_feat, size=x5p.shape[2:], mode="bilinear", align_corners=False)
 
-            x_sel = x[idx]
+            x_sel = x5p[idx]
             fused_img, _ = self.fusion(x_sel, prompt_feat)
-            fused_img = self.vit2(fused_img)
-            x = x.clone()
-            x[idx] = fused_img
+            x5p = x5p.clone()
+            x5p[idx] = fused_img
 
+        x = self.vit1(x5p)
+        x = self.vit2(x)
         fused_2048 = self.proj_back(x)
 
         logits = self.decoder([skip0, x1, x2, x3, x4, fused_2048])
