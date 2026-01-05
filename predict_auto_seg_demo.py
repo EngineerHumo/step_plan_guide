@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Dict, Optional, Tuple
 
 import cv2
+import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -42,6 +43,15 @@ from prediction_postprecess_firststep import (
 
 FIRST_STAGE_INPUT = (1024, 1024)
 SECOND_STAGE_INPUT = (1280, 1280)
+
+matplotlib.rcParams["font.sans-serif"] = [
+    "Noto Sans CJK SC",
+    "WenQuanYi Micro Hei",
+    "Microsoft YaHei",
+    "SimHei",
+    "Arial Unicode MS",
+] + matplotlib.rcParams.get("font.sans-serif", [])
+matplotlib.rcParams["axes.unicode_minus"] = False
 
 
 def _centroid(mask: np.ndarray) -> Optional[Tuple[int, int]]:
