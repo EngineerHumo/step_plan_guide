@@ -3,9 +3,8 @@
 功能特点：
 - 顶部菜单提供“打开”选项，可选择本地图像自动运行两阶段分割。
 - 仅在主窗口展示叠加环形光斑后的结果，不显示概率图或掩码。
-- 侧边提供多种交互按钮：正向点击点、负向点击点、划线、框选、添加区域、删除区域。
-  按钮可点击选中或取消；除正向点击、添加区域、删除区域外，其余按钮仅切换状态不执行功能。
-- 添加/删除区域支持在图上拖动形成封闭区域，对当前分割结果进行合并或删除并重新排布光斑。
+- 侧边提供多种交互按钮：正向点击点、负向点击点、划线、框选。
+  按钮可点击选中或取消；除正向点击外，其余按钮仅切换状态不执行功能。
 - 自动选择可用的中文字体，避免界面中文显示为方框。
 """
 from __future__ import annotations
@@ -14,7 +13,7 @@ import argparse
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, font as tkfont, messagebox
-from typing import List, Optional, Tuple
+from typing import Optional, Tuple
 
 import cv2
 import matplotlib
@@ -78,7 +77,6 @@ class SegmentationApp:
         self._photo_image: Optional[tk.PhotoImage] = None
 
         self.active_mode: Optional[str] = None
-        self.region_points: List[Tuple[int, int]] = []
 
         self._build_menu()
         self._build_layout()
@@ -116,8 +114,6 @@ class SegmentationApp:
             ("negative", "负向点击点"),
             ("line", "划线"),
             ("box", "框选"),
-            ("add", "添加区域"),
-            ("erase", "删除区域"),
         ]
         for key, label in actions:
             btn = tk.Button(side, text=label, relief=tk.RAISED, command=lambda k=key: self._toggle_mode(k))
@@ -147,7 +143,6 @@ class SegmentationApp:
             self._set_status(f"当前模式：{self.buttons[self.active_mode]['text']}")
         else:
             self._set_status("未选择模式")
-        self.region_points.clear()
 
     def _open_image(self) -> None:
         filename = filedialog.askopenfilename(
@@ -223,45 +218,15 @@ class SegmentationApp:
             return
         if self.active_mode == "positive":
             self._handle_positive_click(event)
-        elif self.active_mode in {"add", "erase"}:
-            self.region_points = [(event.x, event.y)]
         # 其他模式仅展示可点击效果
 
     def _on_drag(self, event: tk.Event) -> None:
-        if self.active_mode in {"add", "erase"} and self.resized_bgr is not None:
-            self.region_points.append((event.x, event.y))
-            if len(self.region_points) > 1:
-                self.canvas.create_line(
-                    self.region_points[-2][0],
-                    self.region_points[-2][1],
-                    self.region_points[-1][0],
-                    self.region_points[-1][1],
-                    fill="#66ccff" if self.active_mode == "add" else "#ff6666",
-                )
+        # 预留扩展：目前划线、框选仅为 UI 切换状态。
+        return
 
     def _on_release(self, event: tk.Event) -> None:
-        if self.active_mode not in {"add", "erase"}:
-            return
-        if not self.region_points:
-            return
-        self.region_points.append((event.x, event.y))
-        if len(self.region_points) < 3:
-            self.region_points.clear()
-            return
-        seg_points = [(int(x / self.display_scale), int(y / self.display_scale)) for x, y in self.region_points]
-        mask = np.zeros_like(self.current_mask, dtype=np.uint8)
-        cv2.fillPoly(mask, [np.array(seg_points, dtype=np.int32)], 1)
-
-        if self.active_mode == "add":
-            updated = np.clip(self.current_mask + mask, 0, 1)
-            self._set_status("已合并添加区域")
-        else:
-            updated = np.where(mask > 0, 0, self.current_mask)
-            self._set_status("已删除指定区域")
-
-        self.current_mask = updated.astype(np.uint8)
-        self.region_points.clear()
-        self._refresh_overlay()
+        # 当前不处理拖拽绘制产生的区域。
+        return
 
     def _handle_positive_click(self, event: tk.Event) -> None:
         x = int(event.x / self.display_scale)
