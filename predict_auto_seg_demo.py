@@ -165,9 +165,9 @@ def _visualize_results(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="两阶段自动分割与交互演示")
-    parser.add_argument("--onnx_dir", type=Path, required=True, help="第一阶段 ONNX 模型目录或文件")
-    parser.add_argument("--click_model", type=Path, required=True, help="第二阶段点击分割模型权重路径")
-    parser.add_argument("--image", type=Path, required=True, help="输入原始图像路径")
+    parser.add_argument("--onnx_dir", type=Path, default=r"C:\work space\prp\predict_demo_260105\fold_1_checkpoint_best.onnx", help="第一阶段 ONNX 模型目录或文件")
+    parser.add_argument("--click_model", type=Path, default=r"C:\work space\prp\predict_demo_260105\prp_segmenter.pth", help="第二阶段点击分割模型权重路径")
+    parser.add_argument("--image", type=Path, default=r"C:\work space\prp\predict_demo_260105\val\case_0081\image.png", help="输入原始图像路径")
     parser.add_argument("--output", type=Path, default=Path("outputs"), help="结果保存目录")
     parser.add_argument("--threshold", type=float, default=0.5, help="分割阈值")
     parser.add_argument("--iterations", type=int, default=3, help="自动迭代次数")
